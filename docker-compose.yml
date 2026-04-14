@@ -1,0 +1,89 @@
+services:
+
+  # ─── Ollama ────────────────────────────────────────────────────────────────
+  # Mounts your existing ~/.ollama so models are available instantly —
+  # no re-downloading the 120B model.
+  #
+  # GPU NOTES (Docker Desktop on Windows):
+  #   NVIDIA: uncomment the `deploy` block below and ensure NVIDIA Container
+  #           Toolkit is installed in WSL2.
+  #   AMD:    Vulkan GPU passthrough is not supported in Docker Desktop on
+  #           Windows. The model will run on CPU inside the container.
+  #           For GPU acceleration with AMD, run Ollama natively (as you do
+  #           now) and point the backend at host.docker.internal:11434 instead
+  #           — see the "Use host Ollama" section at the bottom of this file.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agent_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - C:/Users/noamk/.ollama:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+  # ─── FastAPI / LangChain backend ───────────────────────────────────────────
+  python-backend:
+    build:
+      context: ./python-agent
+      dockerfile: Dockerfile
+    container_name: agent_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=gpt-oss:120b-cloud
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+  # ─── Next.js frontend ──────────────────────────────────────────────────────
+  nextjs-frontend:
+    build:
+      context: ./prompt-kit-temp
+      dockerfile: Dockerfile
+    container_name: agent_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # Points the Next.js API route proxy at the backend service name
+      - BACKEND_URL=http://python-backend:8000
+    depends_on:
+      - python-backend
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+networks:
+  agent-net:
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALTERNATIVE: Use your native Ollama (with AMD/Vulkan GPU) instead of the
+# containerised one. This gives you full GPU acceleration.
+#
+# 1. Remove the `ollama` service above.
+# 2. Change python-backend's OLLAMA_BASE_URL to:
+#      OLLAMA_BASE_URL=http://host.docker.internal:11434
+# 3. Start Ollama normally (launch-ollama.ps1), then:
+#      docker compose up python-backend nextjs-frontend
+# ─────────────────────────────────────────────────────────────────────────────
